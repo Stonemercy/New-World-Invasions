@@ -1,2 +1,2 @@
-# Personal-Bot
- Personal bot to learn python
+# New World Invasions bot
+ WIP bot for reporting invasions
