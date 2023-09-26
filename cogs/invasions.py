@@ -7,25 +7,10 @@ import datetime
 # connect to db when cog is loaded - shouldn't close while cog is functional
 con = sqlite3.connect("invasions.db")
 cur = con.cursor()
-actives = cur.execute("SELECT * FROM invasions")
-activeInvasions = actives.fetchall()
-
-# the time the database resets (if bot is running)
-resetTime = datetime.time(hour=23, minute=00)
-
-# the task that reset the db at time of reset (above)
-@tasks.loop(time=resetTime)
-async def cleardb():
-    cur.execute("DELETE FROM invasions")
-    con.commit()
-    print("Cleared the database")
-    con.close()
 
 # lists of zones and times
 # also converted to a csv string for when someone puts the wrong things in
-zoneList = lists.zones
-timeList = lists.times
-yes_no = ['yes', 'no']
+zoneList, timeList, importance = lists.zones, lists.times, lists.importance
 zoneStrings = ', '.join(zoneList)
 timeStrings = ', '.join(timeList)
 
@@ -41,7 +26,7 @@ async def time_autocomplete(inter: disnake.ApplicationCommandInteraction, user_i
 async def yesno_autocomplete(inter: disnake.ApplicationCommandInteraction, user_input: str):
     if not str:
         return ["yes/no"]
-    return [yesno for yesno in yes_no if user_input in yesno]
+    return [yesno for yesno in importance if user_input in yesno]
 
 user_inputs = []
 
@@ -58,20 +43,30 @@ class InvasionsCommand(commands.Cog):
     # invasions list subcommand
     @invasions.sub_command(description="List active (and reported) invasions")
     async def list(self, inter: disnake.ApplicationCommandInteraction):
+
+        actives = cur.execute("SELECT * FROM invasions ORDER BY time ASC")
+        activeInvasions = actives.fetchall()
+
+        listembed = disnake.Embed(
+            title="Reported invasions",
+            color=disnake.Colour.red()
+        )
+        listembed.set_footer(text="Underlined invasions are IMPORTANT")
+
         if activeInvasions == []:
-            await inter.response.send_message("No invasions have been reported for today")
-        elif len(activeInvasions) == 1:
-            invasion1 = activeInvasions[0]
-            await inter.response.send_message(f"Invasions for today:\n{invasion1[0]} - {invasion1[1]} - Important: {invasion1[2]}")
-        elif len(activeInvasions) == 2:
-            invasion1, invasion2 = activeInvasions[0], activeInvasions[1]
-            await inter.response.send_message(f"Invasions for today:\n{str(invasion1[0])} - {str(invasion1[1])} - Important: {str(invasion1[2])}\n{str(invasion2[0])} - {str(invasion2[1])} - Important: {str(invasion2[2])}")
-        elif len(activeInvasions) == 3:
-            invasion1, invasion2, invasion3 = activeInvasions[0], activeInvasions[1], activeInvasions[2]
-            await inter.response.send_message(f"Invasions for today:\n{str(invasion1[0])} - {str(invasion1[1])} - Important:{str(invasion1[2])}\n{str(invasion2[0])} - {str(invasion2[1])} - Important: {str(invasion2[2])}\n{str(invasion3[0])} - {str(invasion3[1])} - Important: {str(invasion3[2])}") 
-        elif len(activeInvasions) == 4:
-            invasion1, invasion2, invasion3, invasion4 = activeInvasions[0], activeInvasions[1], activeInvasions[2], activeInvasions[3]
-            await inter.response.send_message(f"Invasions for today:\n{str(invasion1[0])} - {str(invasion1[1])} - Important: {str(invasion1[2])}\n{str(invasion2[0])} - {str(invasion2[1])} - Important: {str(invasion2[2])}\n{str(invasion3[0])} - {str(invasion3[1])} - Important: {str(invasion3[2])}\n{str(invasion4[0])} - {str(invasion4[1])} - Important: {str(invasion4[2])}")
+            listembed.add_field(name="**No invasions have been reported for today**", value="")
+            await inter.response.send_message(embed=listembed)
+        else:
+            currentIndex = 0
+            for i in activeInvasions:
+                currentIndex += 1
+                importance_markdown = ""
+                if i[2] == "yes":
+                    importance_markdown = "__"
+                else: importance_markdown = ""
+                listembed.add_field(name=f"{currentIndex}.", value=f"{importance_markdown}{i[0]}{importance_markdown}\n{importance_markdown}{i[1]}{importance_markdown}", inline=False)
+            listembed.set_footer(text="Underlined invasions are IMPORTANT")
+            await inter.response.send_message(embed=listembed)
     
     # invasions report subcommand
     @invasions.sub_command(description="Report an invasion")
@@ -98,17 +93,60 @@ class InvasionsCommand(commands.Cog):
     # listener for report confirmation buttons
     @commands.Cog.listener("on_button_click")
     async def report_confirmation_listener(self, inter:disnake.MessageInteraction):
-        zone = user_inputs[0]
-        time = user_inputs[1]
-        is_important = user_inputs[2]
+        zone, time, is_important = user_inputs[0], user_inputs[1], user_inputs[2].capitalize()
 
         if inter.component.custom_id not in ["yes1", "no1"]:
             return
         if inter.component.custom_id == "yes1":
-            print(f"Here's the data: {user_inputs}")
+            print(f"User {inter.author.display_name} submitted: {user_inputs}")
             cur.execute("INSERT INTO invasions VALUES (?, ?, ?)", user_inputs)
             con.commit()
-            await inter.response.send_message(f"You have reported the following:\n{zone} at {time} - Important: {is_important.capitalize()}")
+            await inter.response.send_message(f"You have reported the following:\n**{zone}** at **{time}** - Important: **{is_important.capitalize()}**")
+    
+    @invasions.sub_command(description="REdit a submitted invasion")
+    async def edit(self, inter: disnake.ApplicationCommandInteraction, number:int, zone:str = '', time:str ='', important:str = ''):
+
+        # changes the global to the inputs
+        global user_inputs
+        user_inputs = [number, zone.capitalize(), time, important.capitalize()]
+        get_all = cur.execute("SELECT * FROM invasions ORDER BY time ASC")
+        fetch_all = get_all.fetchall()
+        target = fetch_all[number-1]
+        print(target)
+
+        if fetch_all == []:
+            await inter.response.send_message("There are no invasions reported, why are you trying to edit?")
+        elif zone not in zoneList and zone != "":
+            await inter.response.send_message(f"Your zone is not in the list of zones, pleases select one of the following:\n{zoneStrings}")
+        elif time not in timeList and time != "":
+            await inter.response.send_message(f"Please choose one of the following times:\n{timeStrings}")
+        elif important not in importance and important != "":
+            await inter.response.send_message(f"Please type in \"yes\" or \"no\" for importance")
+        elif zone != '':
+            cur.execute(f"Update invasions set zone='{user_inputs[1]}' where zone='{target[0]}' AND time='{target[1]}'")
+            await inter.response.send_message(f"{fetch_all[number-1]} has had it's zone changed to {user_inputs[1]}")
+        elif time != '':
+            cur.execute(f"Update invasions set time='{user_inputs[2]}' where zone='{target[0]}' AND time='{target[1]}'")
+            await inter.response.send_message(f"{fetch_all[number-1]} has had it's time changed to {time}")
+        elif important != '':
+            cur.execute(f"Update invasions set important='{user_inputs[3]}' where zone='{target[0]}' AND time='{target[1]}'")
+            await inter.response.send_message(f"{fetch_all[number-1]} has had it's importance changed to {important}")
+        con.commit()
+
+        
+
+        
+
+# the time the database resets (if bot is running)
+resetTime = datetime.time(hour=23, minute=00)
+
+# the task that reset the db at time of reset (above)
+@tasks.loop(time=resetTime)
+async def cleardb():
+    cur.execute("DELETE FROM invasions")
+    con.commit()
+    print("Cleared the database")
+    con.close()
 
 def setup(bot: commands.Bot):
     bot.add_cog(InvasionsCommand(bot))

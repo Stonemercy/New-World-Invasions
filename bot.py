@@ -26,7 +26,7 @@ async def on_ready():
     print(f"{bot.user} is online!")
     print(f"Currently in {len(bot.guilds)} {guildGuilds}")
     print(f"Server time is currently: {datetime.datetime.now().strftime('%H:%M:%S')}")
-    print(f"Invasions database reset time is: {resetTime} UTC")
+    print(f"Invasions database reset time is: {resetTime} GMT-1")
     print("===============================")
 
 # runs with token
