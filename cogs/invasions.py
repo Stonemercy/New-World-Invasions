@@ -61,7 +61,7 @@ class InvasionsCommand(commands.Cog):
                 if i[2] == "Yes":
                     importance_markdown = "__"
                 else: importance_markdown = ""
-                listembed.add_field(name=f"{currentIndex} - {importance_markdown}{i[0]}{importance_markdown}", value=f"{importance_markdown}{i[1]}{importance_markdown}", inline=False)
+                listembed.add_field(name=f"{currentIndex} - {importance_markdown}{i[0]}{importance_markdown} - {importance_markdown}{i[1]}{importance_markdown}", value="", inline=False)
             listembed.set_footer(text="Underlined invasions are IMPORTANT")
             await inter.response.send_message(embed=listembed)
     
@@ -72,25 +72,35 @@ class InvasionsCommand(commands.Cog):
         zone:str = commands.param(autocomplete=zone_autocomplete),
         time:str = commands.param(autocomplete=time_autocomplete),
         is_important:str = commands.param(autocomplete=yesno_autocomplete)):
-
-        reportembed = disnake.Embed(
-            title="Your report",
-            description="Make sure it's correct before you submit",
+        report_failed_embed = disnake.Embed(
+            title="Your report failed",
+            description="Here's why:",
             color=disnake.Colour.red()
         )
-
+        report_embed = disnake.Embed(
+            title="Double check your report is correct",
+            color=disnake.Colour.yellow()
+        )
+        report_failed = False
         # changes the global to the inputs
         global user_inputs
         user_inputs = [zone.capitalize(), time, is_important]
 
         if zone not in zoneList:
-            await inter.response.send_message(f"Your zone is not in the list of zones, pleases select one of the following:\n{zoneStrings}")
-        elif time not in timeList:
-            await inter.response.send_message(f"Please choose one of the following times:\n{timeStrings}")
+            report_failed_embed.add_field(name=f"{user_inputs[0]} is not a zone in the game, pleases choose one of the following:", value=f"{zoneStrings} \n \u200b", inline=False)
+            report_failed = True
+        if time not in timeList:
+            report_failed_embed.add_field(name=f"{user_inputs[1]} is not a valid invasion time, please choose one of the following:", value=f"{timeStrings} \n \u200b", inline=False)
+            report_failed = True
+        if is_important not in importance:
+            report_failed_embed.add_field(name=f"Importance must be either {importance[0]} or {importance[1]}, it can't be {user_inputs[2]}", value="\n \u200b", inline=False)
+            report_failed = True
+
+        if report_failed:
+            await inter.response.send_message(embed=report_failed_embed)
         else:
-            reportembed.add_field(name=user_inputs[0], value=user_inputs[1], inline=True)
-            reportembed.add_field(name="Important:", value=user_inputs[2])
-            await inter.response.send_message(embed=reportembed, components=[
+            report_embed.add_field(name=user_inputs[0] + " - " + user_inputs[1], value="Important: " + user_inputs[2], inline=True)
+            await inter.response.send_message(embed=report_embed, components=[
                 disnake.ui.Button(label="Yes", style=disnake.ButtonStyle.success, custom_id="report_yes"),
                 disnake.ui.Button(label="No", style=disnake.ButtonStyle.danger, custom_id="report_no")
             ])
@@ -98,17 +108,25 @@ class InvasionsCommand(commands.Cog):
     # listener for report confirmation buttons
     @commands.Cog.listener("on_button_click")
     async def report_listener(self, inter:disnake.MessageInteraction):
+        def is_me(m):
+                return m.author == self.bot.user
         if inter.component.custom_id not in ["report_yes", "report_no"]:
             return
         if inter.component.custom_id == "report_yes":
-            zone, time, is_important = user_inputs[0], user_inputs[1], user_inputs[2].capitalize()
-            print(f"User {inter.author.display_name} submitted: {user_inputs}")
+            report_confirm_embed = disnake.Embed(
+                title="Invasion recorded!",
+                colour=disnake.Colour.green()
+            )
+            if inter.author.display_name != inter.author.name:
+                nickname=inter.author.display_name
+            else:
+                nickname=inter.author.name
+            print(f"User {nickname} submitted: {user_inputs[0]} at {user_inputs[1]} - Important: {user_inputs[2]}")
             cur.execute("INSERT INTO invasions VALUES (?, ?, ?)", user_inputs)
             con.commit()
-            await inter.response.send_message(f"You have reported the following:\n**{zone}** at **{time}** - Important: **{is_important.capitalize()}**")
+            report_confirm_embed.add_field(name=f"{user_inputs[0]} - {user_inputs[1]}", value=f"Important: {user_inputs[2]}")
+            await inter.response.send_message(embed=report_confirm_embed)
         else:
-            def is_me(m):
-                return m.author == self.bot.user 
             await inter.channel.purge(limit=1, check=is_me)
     
     @invasions.sub_command(description="Edit a submitted invasion")
@@ -140,7 +158,7 @@ class InvasionsCommand(commands.Cog):
             edit_failed_embed.add_field(name="The provided time was not in the proper format, please select one of the following:", value=timeStrings + "\n \u200b", inline=False)
         if important not in importance and important != "":
             edit_failed = True
-            edit_failed_embed.add_field(name="Importance must be either \"yes\" or \"no\"", value="", inline=False)
+            edit_failed_embed.add_field(name="Importance must be either `Yes` or `No`", value="", inline=False)
         if zone != '' and not edit_failed:
             cur.execute(f"Update invasions set zone='{user_inputs[1]}' where zone='{target[0]}' AND time='{target[1]}'")
             edit_success_embed.add_field(name="Old invasion:", value=f"{target[0]} at {target[1]} - Important: {target[2]}")
@@ -156,9 +174,8 @@ class InvasionsCommand(commands.Cog):
         if edit_failed:
             await inter.response.send_message(embed=edit_failed_embed)
         else:
-            await inter.response.send_message(embed=edit_success_embed)
             con.commit()
-
+            await inter.response.send_message(embed=edit_success_embed)
 
     @invasions.sub_command(description="List active (and reported) invasions")
     async def delete(self, inter: disnake.ApplicationCommandInteraction, number:int=1):
@@ -173,12 +190,12 @@ class InvasionsCommand(commands.Cog):
         )
 
         if activeInvasions == []:
-            deleteembed.add_field(name="**No invasions have been reported for today**", value="||that means you cant delete any lmao||")
+            deleteembed.add_field(name="**No invasions have been reported for today**", value="")
             await inter.response.send_message(embed=deleteembed)
         else:
             user_choice = activeInvasions[user_inputs[0]]
-            deleteembed.add_field(name=user_choice[0], value=user_choice[1], inline=True)
-            deleteembed.add_field(name="Important:", value=user_choice[2], inline=True)
+            deleteembed.add_field(name=f"{user_choice[0]} - {user_choice[1]}", value=f"Important: {user_choice[2]}", inline=True)
+            deleteembed.add_field(name="===============================================", value="", inline=False)
             deleteembed.set_footer(text="You can report it again if this is a mistake, but that's effort, right?")
             await inter.response.send_message(embed=deleteembed, components=[
                 disnake.ui.Button(label="Yes", style=disnake.ButtonStyle.success, custom_id="delete_yes"),
@@ -188,11 +205,13 @@ class InvasionsCommand(commands.Cog):
     # listener for report confirmation buttons
     @commands.Cog.listener("on_button_click")
     async def delete_listener(self, inter:disnake.MessageInteraction):
+        def is_me(m):
+                return m.author == self.bot.user
         actives = cur.execute("SELECT * FROM invasions ORDER BY time ASC")
         activeInvasions = actives.fetchall()
         if inter.component.custom_id not in ["delete_yes", "delete_no"]:
             return
-        target = activeInvasions[int(user_inputs[0])-1]
+        target = activeInvasions[user_inputs[0]]
         delete_confirm_embed = disnake.Embed(
             title="You have deleted the following invasion:",
             description="===============================================",
@@ -200,12 +219,13 @@ class InvasionsCommand(commands.Cog):
         )
 
         if inter.component.custom_id == "delete_yes":
-            delete_confirm_embed.add_field(name=f"{user_inputs[0]} - {target[0]}", value=target[1])
-            delete_confirm_embed.add_field(name="Important:", value=target[2])
+            delete_confirm_embed.add_field(name=f"{int(user_inputs[0])+1} - {target[0]} , {target[1]}", value=f"Important: {target[2]}")
             cur.execute(f"Delete from invasions where zone='{target[0]}' and time='{target[1]}'")
             con.commit()
             print(f"User {inter.author.display_name} deleted {target[0]} at {target[1]}")
             await inter.response.send_message(embed=delete_confirm_embed)
+        else:
+            await inter.channel.purge(limit=1, check=is_me)
 
 # the time the database resets (if bot is running)
 resetTime = datetime.time(hour=3, minute=00)
