@@ -1,10 +1,10 @@
+import re
 import disnake
 from helpers.embeds import embed_generator
 from helpers.lists import times, zones, importance
-from helpers.views import ReportButtons, ReportVoting
-from helpers.checks import report_checks, SetupChecks
-from helpers.times import right_now
-from disnake.ext import commands, tasks
+from helpers.views import ReportButtonView, ReportVotingView
+from helpers.checks import report_checks, setup_checks
+from disnake.ext import commands
 from bot import con, cur, bot_owner
 
 #autocomplete languages
@@ -18,36 +18,22 @@ async def yesno_autocomplete(inter: disnake.ApplicationCommandInteraction, user_
     if not str: return ["Yes/No"]
     return [yesno for yesno in importance if user_input.capitalize() in yesno]
 
+# global
+user_inputs = []
+
 # the entire cog for the invasions command
 class InvasionsCommand(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.inputs = []
-        self.invasions_ping.start()
 
     def cog_load(self):
-        print("Invasions cog has finished loading")        
+        self.first_load = True
+        if self.bot.reload == True and self.first_load == True:
+            print("Invasions cog has finished loading")
+            self.first_load = False
+        else:
+            print("Invasions cog has been reloaded due to the file being saved")
     
-    @tasks.loop(minutes=1)
-    async def invasions_ping(self):
-        now = right_now()
-        print(f"{now.strftime('%H:%M')}")
-        if now.hour in range(17, 22) and now.minute in [30, 0]:
-            active_invs = cur.execute("Select * from invasions").fetchall()
-            guilds = cur.execute("Select * from serversettings").fetchall()
-            if active_invs != None:
-                print(f"Invasion checks:\nTotal Invasions listed: {len(active_invs)}")
-                for i in active_invs:
-                    print(f"    Invasion: {i[0]}\n    Time:{i[1]}")
-                    if i[1] == right_now("ping check"):
-                        for j in guilds:
-                            channel = self.bot.get_guild(j[0]).get_channel(j[1])
-                            await channel.send("test")
-
-    @invasions_ping.before_loop
-    async def before_invasions_ping(self):
-        await self.bot.wait_until_ready()
-
     #initial invasions command group
     @commands.slash_command()
     async def invasions(self, inter: disnake.ApplicationCommandInteraction):
@@ -63,10 +49,15 @@ class InvasionsCommand(commands.Cog):
             embed.add_field("No invasions have been reported for today", "")
             await inter.response.send_message(embed=embed)
         else:
-            current_index = 0
+            currentIndex = 0
+            embed.set_footer(text="Underlined invasions are IMPORTANT")
             for i in active_invasions:
-                current_index += 1
-                embed.add_field(f"{current_index} - {i[0]} - {i[1]}", "", inline=False)
+                currentIndex += 1
+                im = ""
+                if i[2] == "Yes":
+                    im = "__"
+                else: im = ""
+                embed.add_field(f"{currentIndex} - {im}{i[0]}{im} - {im}{i[1]}{im}", "", inline=False)
             await inter.response.send_message(embed=embed)
     
 
@@ -76,25 +67,26 @@ class InvasionsCommand(commands.Cog):
     async def report(self,
         inter: disnake.ApplicationCommandInteraction,
         zone:str = commands.param(autocomplete=zone_autocomplete),
-        time:str = commands.param(autocomplete=time_autocomplete)):
+        time:str = commands.param(autocomplete=time_autocomplete),
+        is_important:str = commands.param(autocomplete=yesno_autocomplete)):
         """Show item info
         
         Parameters
         ----------
         zone: The zone the invasion is in
         time: The time the invasion is at
+        is_important: If the invasion is important
         """
-
-        setup_checks = SetupChecks(cur, inter.guild)
-        if not setup_checks.ann_role_setup or not setup_checks.ann_channel_setup:
-            return await inter.send("You haven't set up your server's config yet, use the `/setup` command first.", ephemeral=True, delete_after=10.0)
-        
+        if not setup_checks(cur, inter.guild):
+            return await inter.response.send_message("You haven't set up your server's config yet, use the /setup command first.")
         embed = embed_generator("report")
 
-        self.inputs = [zone.title(), time]
+        # changes the global to the inputs of this command
+        global user_inputs
+        user_inputs = [zone, time, is_important]
 
         # error checking
-        report_check_findings = report_checks(self.inputs, embed, cur)
+        report_check_findings = report_checks(zone, time, is_important, embed, cur)
         embed = report_check_findings[1]
         
         if report_check_findings[0]:
@@ -102,8 +94,8 @@ class InvasionsCommand(commands.Cog):
             embed.add_field("\u200b", f"If you believe there has been an error, please contact me: {owner_ping.mention}", inline=False)
             await inter.response.send_message(embed=embed)
         else:
-            buttons = ReportButtons()
-            embed.set_footer(text="Clicking \"Yes\" will post it to every server that has this bot setup")
+            embed.remove_field(3)
+            buttons = ReportButtonView()
             await inter.response.send_message(embed=embed, view=buttons)
             buttons.message = await inter.original_response()
             
@@ -114,43 +106,43 @@ class InvasionsCommand(commands.Cog):
         if inter.component.custom_id not in ["report_yes", "report_no"]:
             return
         if inter.component.custom_id == "report_yes":
-            self.report_author = inter.author.id
             embed = embed_generator("report")
+            user_inputs[0], user_inputs[2] = user_inputs[0].title(), user_inputs[2].capitalize()
             all_channels = cur.execute("Select * from serversettings where ann_channel_id is not 0").fetchall()
-            cur.execute("INSERT INTO invasions VALUES (?, ?, 0)", self.inputs)
-            cur.execute("Insert or ignore into users values (?, 0)", (inter.author.id,))
+            cur.execute("INSERT INTO invasions VALUES (?, ?, ?)", user_inputs)
             con.commit()
-            embed.set_field_at(0, "Zone", f"{self.inputs[0]}"
-                ).set_field_at(1, "Time", f"{self.inputs[1]}"
-                ).add_field("\u200b", f"Submitted by: {self.bot.get_user(212649977707495427).mention}", inline=False)
+            embed.set_field_at(0, "Zone", f"{user_inputs[0]}"
+                ).set_field_at(1, "Time", f"{user_inputs[1]}"
+                ).set_field_at(2, "Important:", f"{user_inputs[2]}"
+                ).remove_field(3)
             embed.title = "Report submitted!"
             embed.colour = disnake.Colour.green()
+            embed.add_field("\u200b", f"Submitted by: {inter.author.mention}", inline=False)
             guild_posts = 0
-            author_in_lb = cur.execute("Select * from users where user_id = ?", (inter.author.id,)).fetchone()
             for i in all_channels:
-                voting_buttons = ReportVoting(cur=cur, author_in_lb=author_in_lb)
+                guild_posts += 1
+                voting_buttons = ReportVotingView()
                 channel = self.bot.get_guild(i[0]).get_channel(i[1])
                 voting_buttons.message = await channel.send(embed=embed, view=voting_buttons)
-                guild_posts += 1
-            print(f"User '{inter.author.name}' submitted: {self.inputs[0]} at {self.inputs[1]}")
-            print(f"Successfully posted to {guild_posts}/{len(inter.bot.guilds)} joined guilds")
+            print(f"User '{inter.author.name}' submitted: {user_inputs[0]} at {user_inputs[1]} - Important: {user_inputs[2]}")
+            print(f"Successfully posted to {guild_posts}/{len(inter.bot.guilds)} guilds")
             
-    """# listener for leaderboard vote buttons
+    # listener for leaderboard vote buttons
     @commands.Cog.listener("on_button_click")
     async def leaderboard_vote_listener(self, inter:disnake.MessageInteraction):
         if inter.component.custom_id not in ["upvote", "downvote"]:
             return
-        report_author = re.findall('\d{16,19}', inter.message.embeds[0].fields[2].value)[0]
+        report_author = re.findall('\d{16,19}', inter.message.embeds[0].fields[3].value)[0]
         user_in_leaderboard = cur.execute("Select * from users where user_id = ?", (report_author,)).fetchone()
         if user_in_leaderboard == None:
-            cur.execute(f"Insert or ignore into users values (?, ?)", (report_author, 0))
+            cur.execute(f"Insert into users values (?, ?)", (report_author, 0))
             con.commit()
-        elif inter.component.custom_id == "upvote":
+        if inter.component.custom_id == "upvote":
             cur.execute("Update users set votes = ? where user_id = ?", (user_in_leaderboard[1] + 1, report_author))
             con.commit()
-        else:
+        elif inter.author.id: 
             cur.execute("Update users set votes = ? where user_id = ?", (user_in_leaderboard[1] - 1, report_author))
-            con.commit()"""
+            con.commit()
 
     # invasions delete subcommand
     @invasions.sub_command(description="Delete an invasion")
